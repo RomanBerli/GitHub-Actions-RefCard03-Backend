@@ -1,0 +1,99 @@
+name: Deploy Spring Boot Backend to AWS EC2
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: Tests ausführen (H2)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Java 21 einrichten
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Unit- und Integrationstests starten
+        run: |
+          chmod +x mvnw
+          ./mvnw test
+
+  build:
+    name: JAR-Artefakt bauen
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Java 21 einrichten
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Spring Boot JAR paketieren
+        run: |
+          chmod +x mvnw
+          ./mvnw clean package -DskipTests
+
+      - name: JAR als Artefakt hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-jar
+          path: target/*.jar
+          if-no-files-found: error
+
+  deploy:
+    name: Auf AWS EC2 deployen
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    environment: production
+    steps:
+      - name: JAR-Artefakt herunterladen
+        uses: actions/download-artifact@v4
+        with:
+          name: app-jar
+          path: target
+
+      - name: SSH-Key einrichten
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          if [ -z "$EC2_HOST" ] || [ -z "$EC2_USER" ] || [ -z "$EC2_SSH_KEY" ]; then
+            echo "Error: EC2_HOST, EC2_USER oder EC2_SSH_KEY fehlt im Environment 'production'."
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          echo "$EC2_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+
+      - name: JAR per rsync übertragen und Service neu starten
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+        run: |
+          JAR_FILE=$(ls target/*.jar | head -n 1)
+          rsync -avz -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
+            "$JAR_FILE" "$EC2_USER@$EC2_HOST:/opt/businesstrips/app.jar"
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" \
+            "sudo systemctl restart businesstrips.service && sudo systemctl status businesstrips.service --no-pager"
+
+      - name: SSH-Key entfernen
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
