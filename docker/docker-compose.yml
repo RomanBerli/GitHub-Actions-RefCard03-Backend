@@ -1,0 +1,20 @@
+services:
+  bbw-mariadb-trips-dev:
+    image: mariadb
+    container_name: bbw-mariadb-trips-dev
+    environment:
+      - MYSQL_ROOT_PASSWORD=bbw123
+      - MYSQL_DATABASE=db_biztrips
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./database:/var/lib/mysql
+
+  bbw-phpmyadmin-trips:
+    depends_on:
+      - bbw-mariadb-trips-dev
+    image: phpmyadmin/phpmyadmin
+    ports:
+      - "8082:80"
+    environment:
+      PMA_HOST: bbw-mariadb-trips-dev
